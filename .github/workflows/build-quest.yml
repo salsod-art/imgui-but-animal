@@ -117,19 +117,19 @@ jobs:
 
           # Minimal CMake import
           cat > dobby-build/dobby-config.cmake <<'EOF'
-if(NOT TARGET dobby_static)
-  if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
-    add_library(dobby_static STATIC IMPORTED)
-    set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
-  elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
-    add_library(dobby_static SHARED IMPORTED)
-    set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
-  else()
-    message(FATAL_ERROR "dobby prebuilt library not found")
-  endif()
-endif()
-set(DOBBY_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../dobby-src" CACHE PATH "Dobby headers")
-EOF
+          if(NOT TARGET dobby_static)
+          if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
+          add_library(dobby_static STATIC IMPORTED)
+          set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
+          elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
+          add_library(dobby_static SHARED IMPORTED)
+          set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
+          else()
+          message(FATAL_ERROR "dobby prebuilt library not found")
+          endif()
+          endif()
+          set(DOBBY_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../dobby-src" CACHE PATH "Dobby headers")
+          EOF
 
       # -----------------------------------------------------------------------
       # Configure libimgui

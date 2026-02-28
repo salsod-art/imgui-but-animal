@@ -3,8 +3,8 @@ name: Build libimgui.so (Quest / arm64)
 on:
   push:
     branches: [ master, main ]
-  pull_request:
-  workflow_dispatch:
+  pull_request: {}
+  workflow_dispatch: {}
 
 jobs:
   build-quest:
@@ -96,21 +96,21 @@ jobs:
 
           # Create a tiny config that defines an IMPORTED target so downstream CMake can link to it.
           cat > dobby-build/dobby-config.cmake <<'EOF'
-# Auto-generated minimal Dobby CMake config (provides dobby_static imported target)
-if(NOT TARGET dobby_static)
-  if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
-    add_library(dobby_static STATIC IMPORTED)
-    set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
-  elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
-    add_library(dobby_static SHARED IMPORTED)
-    set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
-  else()
-    message(FATAL_ERROR "dobby prebuilt library not found in ${CMAKE_CURRENT_LIST_DIR}/..")
-  endif()
-endif()
-# expose a variable pointing to headers (dobby-src clone)
-set(DOBBY_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../dobby-src" CACHE PATH "Dobby headers")
-EOF
+
+       if(NOT TARGET dobby_static)
+       if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
+       add_library(dobby_static STATIC IMPORTED)
+       set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
+       elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
+       add_library(dobby_static SHARED IMPORTED)
+       set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
+       else()
+       message(FATAL_ERROR "dobby prebuilt library not found in ${CMAKE_CURRENT_LIST_DIR}/..")
+       endif()
+       endif()
+
+       set(DOBBY_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../dobby-src" CACHE PATH "Dobby headers")
+       EOF
 
           echo "Prepared dobby-build with prebuilt library and dobby-config.cmake"
           ls -l dobby-build || true

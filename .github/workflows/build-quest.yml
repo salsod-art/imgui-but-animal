@@ -69,37 +69,27 @@ jobs:
       - name: Patch Dobby for NDK r26c
         if: steps.cache-dobby.outputs.cache-hit != 'true'
         run: |
-          # Fix 1: OSMemory undeclared in os_arch_features.h
-          # Replace OSMemory calls with direct POSIX equivalents
           cat > /tmp/patch_dobby.py << 'PYEOF'
           import sys
-
           path = 'dobby-src/common/os_arch_features.h'
           with open(path, 'r') as f:
               content = f.read()
-
-          # Add missing includes at the top
           if '#include <unistd.h>' not in content:
               content = '#include <unistd.h>\n#include <sys/mman.h>\n' + content
-
-          # Replace OSMemory calls with POSIX equivalents
-          content = content.replace(
-              'OSMemory::PageSize()',
-              'sysconf(_SC_PAGESIZE)'
-          )
+          content = content.replace('OSMemory::PageSize()', 'sysconf(_SC_PAGESIZE)')
           content = content.replace(
               'OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)',
               'mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0'
           )
-
           with open(path, 'w') as f:
               f.write(content)
           print("Patched " + path)
           PYEOF
           python3 /tmp/patch_dobby.py
 
-          # Fix 2: @PAGE/@PAGEOFF ARM64 asm syntax not supported by clang 17
-          # DOBBY_GENERATE_SHARED=OFF skips this file entirely — no sed needed
+          ASM=dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
+          sed -i 's/adrp x17, common_closure_bridge_handler@PAGE/adrp x17, :got:common_closure_bridge_handler/' $ASM
+          sed -i 's/add x17, x17, common_closure_bridge_handler@PAGEOFF/ldr x17, [x17, :got_lo12:common_closure_bridge_handler]/' $ASM
 
       - name: Build Dobby
         if: steps.cache-dobby.outputs.cache-hit != 'true'

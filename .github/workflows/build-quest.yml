@@ -52,16 +52,13 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Dobby (cached)
-      # Patches fix two NDK r26c incompatibilities:
-      #   1. OSMemory undeclared in os_arch_features.h
-      #   2. @PAGE/@PAGEOFF Apple asm syntax not supported by clang 17
       # -----------------------------------------------------------------------
       - name: Cache Dobby build
         uses: actions/cache@v4
         id: cache-dobby
         with:
           path: dobby-build
-          key: dobby-arm64-r26c-v6
+          key: dobby-arm64-r26c-v7
 
       - name: Clone Dobby
         run: |
@@ -72,53 +69,28 @@ jobs:
       - name: Patch Dobby for NDK r26c
         if: steps.cache-dobby.outputs.cache-hit != 'true'
         run: |
-          python3 << 'PYEOF'
-          import os, re
+          # --- Fix 1: OSMemory undeclared in os_arch_features.h ---
+          OSM="dobby-src/common/os_arch_features.h"
+          sed -i '1s|^|#include <unistd.h>\n#include <sys/mman.h>\n|' "$OSM"
+          sed -i 's|OSMemory::PageSize()|sysconf(_SC_PAGESIZE)|g' "$OSM"
+          sed -i 's|OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)|mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0|g' "$OSM"
+          echo "Patched $OSM"
 
-          # Fix 1: OSMemory undeclared in os_arch_features.h
-          path = 'dobby-src/common/os_arch_features.h'
-          with open(path, 'r') as f:
-              c = f.read()
-          if '#include <unistd.h>' not in c:
-              c = '#include <unistd.h>\n#include <sys/mman.h>\n' + c
-          c = c.replace('OSMemory::PageSize()', 'sysconf(_SC_PAGESIZE)')
-          c = c.replace(
-              'OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)',
-              'mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0'
-          )
-          with open(path, 'w') as f:
-              f.write(c)
-          print("Patched", path)
+          # --- Fix 2: @PAGE/@PAGEOFF Apple asm syntax in closure_bridge_arm64.asm ---
+          ASM="dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm"
 
-          # Fix 2: @PAGE/@PAGEOFF Apple asm syntax -> Linux GOT syntax
-          # Walk every source file and patch with regex so whitespace doesn't matter
-          for root, dirs, files in os.walk('dobby-src'):
-              for fname in files:
-                  if not fname.endswith(('.cc', '.cpp', '.S', '.asm', '.s')):
-                      continue
-                  fpath = os.path.join(root, fname)
-                  with open(fpath, 'r', errors='replace') as f:
-                      c = f.read()
-                  if '@PAGE' not in c:
-                      continue
-                  orig = c
-                  # adrp rx, symbol@PAGE  ->  adrp rx, :got:symbol
-                  c = re.sub(
-                      r'adrp\s+(x\d+),\s*(\w+)@PAGE\b',
-                      r'adrp \1, :got:\2',
-                      c
-                  )
-                  # add rx, rx, symbol@PAGEOFF  ->  ldr rx, [rx, :got_lo12:symbol]
-                  c = re.sub(
-                      r'add\s+(x\d+),\s*(x\d+),\s*(\w+)@PAGEOFF\b',
-                      r'ldr \1, [\2, :got_lo12:\3]',
-                      c
-                  )
-                  if c != orig:
-                      with open(fpath, 'w') as f:
-                          f.write(c)
-                      print("Patched", fpath)
-          PYEOF
+          echo "=== Lines containing PAGE before patch ==="
+          grep -n "PAGE\|adrp\|common_closure" "$ASM" || echo "(nothing found)"
+
+          # Try tab separator
+          sed -i 's|adrp\tx17, common_closure_bridge_handler@PAGE|adrp x17, :got:common_closure_bridge_handler|g' "$ASM"
+          sed -i 's|add\tx17, x17, common_closure_bridge_handler@PAGEOFF|ldr x17, [x17, :got_lo12:common_closure_bridge_handler]|g' "$ASM"
+          # Try space separator
+          sed -i 's|adrp x17, common_closure_bridge_handler@PAGE|adrp x17, :got:common_closure_bridge_handler|g' "$ASM"
+          sed -i 's|add x17, x17, common_closure_bridge_handler@PAGEOFF|ldr x17, [x17, :got_lo12:common_closure_bridge_handler]|g' "$ASM"
+
+          echo "=== Lines containing PAGE after patch ==="
+          grep -n "PAGE\|adrp\|common_closure" "$ASM" || echo "(nothing found - patch successful)"
 
       - name: Build Dobby
         if: steps.cache-dobby.outputs.cache-hit != 'true'

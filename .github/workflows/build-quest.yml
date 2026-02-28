@@ -4,7 +4,7 @@ on:
   push:
     branches: [ master, main ]
   pull_request:
-  workflow_dispatch:      # lets you trigger a build manually from the Actions tab
+  workflow_dispatch:
 
 jobs:
   build-quest:
@@ -12,96 +12,102 @@ jobs:
     name: Build - Quest (arm64-v8a)
 
     steps:
-      # -----------------------------------------------------------------------
-      # 1. Checkout your fork (which contains imgui + your imgui-vr/ folder)
-      # -----------------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      # -----------------------------------------------------------------------
-      # 2. Android NDK — pinned to r26c (stable, supports API 26+ / Quest)
-      # -----------------------------------------------------------------------
       - name: Setup Android NDK r26c
         uses: nttld/setup-ndk@v1
-        id: setup-ndk
+        id: ndk
         with:
           ndk-version: r26c
           add-to-path: true
 
       # -----------------------------------------------------------------------
-      # 3. OpenXR SDK — build the loader for arm64
+      # OpenXR SDK (cached)
       # -----------------------------------------------------------------------
-      - name: Cache OpenXR SDK
+      - name: Cache OpenXR build
         uses: actions/cache@v4
         id: cache-openxr
         with:
-          path: openxr-sdk-build
-          key: openxr-arm64-${{ runner.os }}-r26c-v1
+          path: openxr-build
+          key: openxr-arm64-r26c-v2
 
-      - name: Build OpenXR SDK (arm64-v8a)
+      - name: Clone OpenXR SDK
+        run: |
+          if [ ! -d openxr-src ]; then
+            git clone --depth 1 https://github.com/KhronosGroup/OpenXR-SDK openxr-src
+          fi
+
+      - name: Build OpenXR SDK
         if: steps.cache-openxr.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 https://github.com/KhronosGroup/OpenXR-SDK openxr-sdk-src
-          cmake -S openxr-sdk-src -B openxr-sdk-build \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+          cmake -S openxr-src -B openxr-build \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTS=OFF \
             -DBUILD_CONFORMANCE_TESTS=OFF
-          cmake --build openxr-sdk-build --config Release -j$(nproc)
+          cmake --build openxr-build -j$(nproc)
 
       # -----------------------------------------------------------------------
-      # 4. Dobby — Android hook library (arm64)
+      # Dobby (cached)
+      # Pinned to last commit before OSMemory regression.
+      # DOBBY_GENERATE_SHARED=OFF + explicit ASM target fix the @PAGE asm bug.
       # -----------------------------------------------------------------------
-      - name: Cache Dobby
+      - name: Cache Dobby build
         uses: actions/cache@v4
         id: cache-dobby
         with:
           path: dobby-build
-          key: dobby-arm64-${{ runner.os }}-r26c-v1
+          key: dobby-arm64-r26c-v4
 
-      - name: Build Dobby (arm64-v8a)
+      - name: Clone Dobby (pinned)
+        run: |
+          if [ ! -d dobby-src ]; then
+            git clone https://github.com/jmpews/Dobby dobby-src
+            cd dobby-src
+            git checkout 2b635bd392ebe5280e3e35e5b5b2e99f355f0c2a
+          fi
+
+      - name: Build Dobby
         if: steps.cache-dobby.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 https://github.com/jmpews/Dobby dobby-src
           cmake -S dobby-src -B dobby-build \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DAndroid=true \
-            -DDOBBY_DEBUG=OFF
-          cmake --build dobby-build --config Release -j$(nproc)
+            -DDOBBY_DEBUG=OFF \
+            -DDOBBY_GENERATE_SHARED=OFF \
+            -DPlugin.Android.BionicLinkerUtil=OFF \
+            -DCMAKE_ASM_FLAGS="-target aarch64-linux-android26"
+          cmake --build dobby-build --target dobby_static -j$(nproc)
 
       # -----------------------------------------------------------------------
-      # 5. Build libimgui.so
+      # Build libimgui.so
       # -----------------------------------------------------------------------
-      - name: Configure libimgui.so
+      - name: Configure
         run: |
           cmake -S imgui-vr -B build-quest \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release \
             -DIMGUI_DIR=${{ github.workspace }} \
-            -DOPENXR_DIR=${{ github.workspace }}/openxr-sdk-src \
+            -DOPENXR_DIR=${{ github.workspace }}/openxr-src \
+            -DOPENXR_BUILD_DIR=${{ github.workspace }}/openxr-build \
             -DDOBBY_DIR=${{ github.workspace }}/dobby-src \
+            -DDOBBY_BUILD_DIR=${{ github.workspace }}/dobby-build \
             -DIMGUI_VR_VULKAN=ON \
             -DIMGUI_VR_MINHOOK=OFF \
             -DIMGUI_VR_DOBBY=ON
-        env:
-          # Tell the OpenXR cmake where we put the built loader
-          OPENXR_BUILD_DIR: ${{ github.workspace }}/openxr-sdk-build
 
-      - name: Build libimgui.so
-        run: cmake --build build-quest --config Release -j$(nproc)
+      - name: Build
+        run: cmake --build build-quest -j$(nproc)
 
       # -----------------------------------------------------------------------
-      # 6. Upload the .so as a build artifact
-      #    Download it from the Actions tab → your workflow run → Artifacts
+      # Upload — download from Actions tab after run finishes
       # -----------------------------------------------------------------------
       - name: Upload libimgui.so
         uses: actions/upload-artifact@v4
@@ -110,14 +116,9 @@ jobs:
           path: build-quest/libimgui.so
           if-no-files-found: error
 
-      # -----------------------------------------------------------------------
-      # 7. Also show the file size so you can sanity-check it built correctly
-      # -----------------------------------------------------------------------
-      - name: Show artifact info
+      - name: Show build info
         run: |
-          echo "=== libimgui.so ===" 
           ls -lh build-quest/libimgui.so
           file build-quest/libimgui.so
-          echo ""
-          echo "Symbols (ImGui + OpenXR hook entrypoints):"
-          nm -D build-quest/libimgui.so 2>/dev/null | grep -E "ImGui|xrEndFrame|lib_init" | head -20
+          nm -D build-quest/libimgui.so 2>/dev/null \
+            | grep -E "lib_init|xrEndFrame|ImGui_ImplOpenXR" | head -20

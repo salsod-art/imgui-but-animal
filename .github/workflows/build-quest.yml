@@ -64,7 +64,7 @@ jobs:
         id: cache-dobby
         with:
           path: dobby-build
-          key: dobby-arm64-r26c-v7
+          key: dobby-arm64-r26c-v8
 
       - name: Clone Dobby
         run: |
@@ -72,33 +72,23 @@ jobs:
             git clone --depth 1 https://github.com/jmpews/Dobby dobby-src
           fi
 
-      - name: Patch Dobby for Android (remove macOS ASM + guard asm flag)
+      - name: Patch Dobby for Android NDK r26c
         if: steps.cache-dobby.outputs.cache-hit != 'true'
         run: |
-          set -euo pipefail
-
-          # Fix: add missing includes and replace OSMemory usage
+          # --- Fix 1: OSMemory undeclared in os_arch_features.h ---
           OSM="dobby-src/common/os_arch_features.h"
-          if [ -f "$OSM" ]; then
-            sed -i '1s|^|#include <unistd.h>\n#include <sys/mman.h>\n|' "$OSM" || true
-            sed -i 's|OSMemory::PageSize()|sysconf(_SC_PAGESIZE)|g' "$OSM" || true
-            sed -i 's@OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)@mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0@g' "$OSM" || true
-            echo "Patched $OSM"
-          else
-            echo "Warning: $OSM not found; skipping OSM patch"
-          fi
+          sed -i '1s|^|#include <unistd.h>\n#include <sys/mman.h>\n|' "$OSM"
+          sed -i 's|OSMemory::PageSize()|sysconf(_SC_PAGESIZE)|g' "$OSM"
+          sed -i 's@OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)@mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0@g' "$OSM"
 
-          # Remove macOS-only arm64 ASM files so Android assembler won't try to compile them
-          rm -f dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
-          rm -f dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm
-
-          # Guard BUILD_WITH_TRAMPOLINE_ASM so it's NOT enabled for Android builds
-          # Wrap the compile_definitions addition with an if(NOT ANDROID) ... endif()
-          if grep -q "BUILD_WITH_TRAMPOLINE_ASM" dobby-src/CMakeLists.txt; then
-            sed -i 's@set(compile_definitions "${compile_definitions} -DBUILD_WITH_TRAMPOLINE_ASM")@if(NOT ANDROID)\nset(compile_definitions "${compile_definitions} -DBUILD_WITH_TRAMPOLINE_ASM")\nendif()@' dobby-src/CMakeLists.txt || true
-          else
-            echo "No BUILD_WITH_TRAMPOLINE_ASM line found in CMakeLists.txt; skipping guard"
-          fi
+          # --- Fix 2: Remove Apple-only assembly for Android ---
+          ASM_LIST="closure_bridge_arm64.asm closure_trampoline_arm64.asm"
+          for ASM in $ASM_LIST; do
+            FILE="dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/$ASM"
+            if [ -f "$FILE" ]; then
+              mv "$FILE" "$FILE.disabled-for-android"
+            fi
+          done
 
       - name: Build Dobby
         if: steps.cache-dobby.outputs.cache-hit != 'true'
@@ -109,10 +99,7 @@ jobs:
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release \
             -DDOBBY_DEBUG=OFF \
-            -DPlugin.Android.BionicLinkerUtil=OFF \
-            -DDOBBY_BUILD_EXAMPLE=OFF \
-            -DDOBBY_BUILD_TEST=OFF \
-            -DDOBBY_BUILD_KERNEL_MODE=OFF
+            -DPlugin.Android.BionicLinkerUtil=OFF
           cmake --build dobby-build --target dobby_static -j$(nproc)
 
       # -----------------------------------------------------------------------
@@ -138,7 +125,7 @@ jobs:
         run: cmake --build build-quest -j$(nproc)
 
       # -----------------------------------------------------------------------
-      # Upload — download from Actions tab after run finishes
+      # Upload artifact
       # -----------------------------------------------------------------------
       - name: Upload libimgui.so
         uses: actions/upload-artifact@v4
@@ -149,7 +136,7 @@ jobs:
 
       - name: Show build info
         run: |
-          ls -lh build-quest/libimgui.so || true
-          file build-quest/libimgui.so || true
+          ls -lh build-quest/libimgui.so
+          file build-quest/libimgui.so
           nm -D build-quest/libimgui.so 2>/dev/null \
-            | grep -E "lib_init|xrEndFrame|ImGui_ImplOpenXR" | head -20 || true
+            | grep -E "lib_init|xrEndFrame|ImGui_ImplOpenXR" | head -20

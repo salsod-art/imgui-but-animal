@@ -12,9 +12,15 @@ jobs:
     name: Build - Quest (arm64-v8a)
 
     steps:
+      # -----------------------------------------------------------------------
+      # Checkout repository
+      # -----------------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+      # -----------------------------------------------------------------------
+      # Setup Android NDK r26c
+      # -----------------------------------------------------------------------
       - name: Setup Android NDK r26c
         uses: nttld/setup-ndk@v1
         id: ndk
@@ -22,6 +28,9 @@ jobs:
           ndk-version: r26c
           add-to-path: true
 
+      # -----------------------------------------------------------------------
+      # OpenXR SDK (cached)
+      # -----------------------------------------------------------------------
       - name: Cache OpenXR build
         uses: actions/cache@v4
         id: cache-openxr
@@ -47,79 +56,71 @@ jobs:
             -DBUILD_CONFORMANCE_TESTS=OFF
           cmake --build openxr-build -j$(nproc)
 
-      - name: Cache Dobby build
-        uses: actions/cache@v4
-        id: cache-dobby
-        with:
-          path: dobby-build
-          key: dobby-arm64-r26c-v9
-
-      - name: Clone Dobby
+      # -----------------------------------------------------------------------
+      # Dobby headers (clone only) + use prebuilt binary (no compile)
+      # -----------------------------------------------------------------------
+      - name: Clone Dobby (headers only)
         run: |
+          # clone so we get headers/source layout for includes. we won't build it.
           if [ ! -d dobby-src ]; then
             git clone --depth 1 https://github.com/jmpews/Dobby dobby-src
           fi
 
-      - name: Patch Dobby for Android (safe edits)
-        if: steps.cache-dobby.outputs.cache-hit != 'true'
+      - name: Download prebuilt Dobby AAR and prepare imported CMake target
         run: |
           set -euo pipefail
 
-          CML="dobby-src/CMakeLists.txt"
-          OSM="dobby-src/common/os_arch_features.h"
+          # where to download the prebuilt AAR from Maven Central
+          AAR_URL="https://repo1.maven.org/maven2/io/github/vvb2060/ndk/dobby/1.2/dobby-1.2.aar"
+          mkdir -p dobby-prebuilt dobby-build
+          echo "Downloading prebuilt dobby AAR from Maven Central..."
+          curl -L -o dobby-prebuilt/dobby.aar "$AAR_URL"
 
-          # 1) Patch os_arch_features.h if present (NDK r26c fixes)
-          if [ -f "$OSM" ]; then
-            sed -i '1s|^|#include <unistd.h>\n#include <sys/mman.h>\n|' "$OSM" || true
-            sed -i 's|OSMemory::PageSize()|sysconf(_SC_PAGESIZE)|g' "$OSM" || true
-            sed -i 's@OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)@mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0@g' "$OSM" || true
-            echo "Patched $OSM"
-          else
-            echo "No $OSM found; skipping OSM patch"
-          fi
+          echo "Unzipping AAR..."
+          unzip -q dobby-prebuilt/dobby.aar -d dobby-prebuilt || true
 
-          # 2) Remove the two macOS arm64 .asm entries from the set(...) list
-          #    (so CMake won't list missing files)
-          if [ -f "$CML" ]; then
-            sed -i '\|source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm|d' "$CML" || true
-            sed -i '\|source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm|d' "$CML" || true
+          # Try find ARM64 library inside AAR (prefer static .a if present, otherwise .so)
+          if [ -f "dobby-prebuilt/jni/arm64-v8a/libdobby.a" ]; then
+            echo "Found libdobby.a"
+            cp dobby-prebuilt/jni/arm64-v8a/libdobby.a dobby-build/libdobby.a
+            LIB_EXT="a"
+          elif [ -f "dobby-prebuilt/jni/arm64-v8a/libdobby.so" ]; then
+            echo "Found libdobby.so"
+            cp dobby-prebuilt/jni/arm64-v8a/libdobby.so dobby-build/libdobby.so
+            LIB_EXT="so"
           else
-            echo "Error: $CML not found" >&2
+            echo "ERROR: No arm64 library found inside AAR (checked jni/arm64-v8a). Listing AAR contents for debug:"
+            unzip -l dobby-prebuilt/dobby.aar || true
             exit 1
           fi
 
-          # 3) Insert a conditional list(APPEND ...) block BEFORE add_library(dobby SHARED ...)
-          #    so the asm files are only appended on non-Android platforms.
-          awk -v block='if(NOT ANDROID)\nlist(APPEND dobby.SOURCE_FILE_LIST\n  source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm\n  source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm\n)\nendif()\n' '
-            BEGIN { printed=0 }
-            /add_library\(dobby SHARED/ && printed==0 {
-              printf "%s", block
-              printed=1
-            }
-            { print }
-          ' "$CML" > "$CML.tmp" && mv "$CML.tmp" "$CML"
+          # Create a tiny config that defines an IMPORTED target so downstream CMake can link to it.
+          cat > dobby-build/dobby-config.cmake <<'EOF'
+# Auto-generated minimal Dobby CMake config (provides dobby_static imported target)
+if(NOT TARGET dobby_static)
+  if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
+    add_library(dobby_static STATIC IMPORTED)
+    set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
+  elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
+    add_library(dobby_static SHARED IMPORTED)
+    set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
+  else()
+    message(FATAL_ERROR "dobby prebuilt library not found in ${CMAKE_CURRENT_LIST_DIR}/..")
+  endif()
+endif()
+# expose a variable pointing to headers (dobby-src clone)
+set(DOBBY_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../dobby-src" CACHE PATH "Dobby headers")
+EOF
 
-          # 4) Guard BUILD_WITH_TRAMPOLINE_ASM compile_definitions so it isn't forced on Android.
-          sed -i 's|set(compile_definitions "${compile_definitions} -DBUILD_WITH_TRAMPOLINE_ASM")|if(NOT ANDROID)\n  set(compile_definitions "${compile_definitions} -DBUILD_WITH_TRAMPOLINE_ASM")\nendif()|' "$CML" || true
+          echo "Prepared dobby-build with prebuilt library and dobby-config.cmake"
+          ls -l dobby-build || true
 
-          echo "CMakeLists.txt patched safely for Android."
-
-      - name: Build Dobby (Android)
-        if: steps.cache-dobby.outputs.cache-hit != 'true'
-        run: |
-          cmake -S dobby-src -B dobby-build \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-26 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DDOBBY_DEBUG=OFF \
-            -DPlugin.Android.BionicLinkerUtil=OFF \
-            -DDOBBY_BUILD_EXAMPLE=OFF \
-            -DDOBBY_BUILD_TEST=OFF \
-            -DDOBBY_BUILD_KERNEL_MODE=OFF
-          cmake --build dobby-build --target dobby_static -j$(nproc)
-
-      - name: Configure libimgui
+      # -----------------------------------------------------------------------
+      # Configure imgui-vr and tell it where to find Dobby (prebuilt)
+      # -----------------------------------------------------------------------
+      - name: Configure libimgui (use prebuilt dobby)
+        env:
+          DOBBY_CONFIG_DIR: ${{ github.workspace }}/dobby-build
         run: |
           cmake -S imgui-vr -B build-quest \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
@@ -131,6 +132,8 @@ jobs:
             -DOPENXR_BUILD_DIR=${{ github.workspace }}/openxr-build \
             -DDOBBY_DIR=${{ github.workspace }}/dobby-src \
             -DDOBBY_BUILD_DIR=${{ github.workspace }}/dobby-build \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dobby-build \
+            -DCMAKE_MODULE_PATH=${{ github.workspace }}/dobby-build \
             -DIMGUI_VR_VULKAN=ON \
             -DIMGUI_VR_MINHOOK=OFF \
             -DIMGUI_VR_DOBBY=ON
@@ -138,6 +141,9 @@ jobs:
       - name: Build libimgui.so
         run: cmake --build build-quest -j$(nproc)
 
+      # -----------------------------------------------------------------------
+      # Upload artifact
+      # -----------------------------------------------------------------------
       - name: Upload libimgui.so
         uses: actions/upload-artifact@v4
         with:

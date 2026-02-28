@@ -69,7 +69,6 @@ jobs:
             cd dobby-src
             git checkout 2b635bd392ebe5280e3e35e5b5b2e99f355f0c2a
           fi
-
       - name: Build Dobby
         if: steps.cache-dobby.outputs.cache-hit != 'true'
         run: |

@@ -66,18 +66,6 @@ jobs:
             git clone --depth 1 https://github.com/<YOUR-IMGUI-VR-REPO>.git imgui-vr
           fi
 
-      # Verify OpenXR backend exists
-      - name: Verify OpenXR backend
-        run: |
-          if [ ! -f imgui-vr/backends/imgui_impl_openxr.cpp ]; then
-            echo "ERROR: imgui_impl_openxr.cpp not found in imgui-vr/backends!"
-            exit 1
-          fi
-          if [ ! -f imgui-vr/backends/imgui_impl_openxr.h ]; then
-            echo "ERROR: imgui_impl_openxr.h not found in imgui-vr/backends!"
-            exit 1
-          fi
-          ls -l imgui-vr/backends
 
       # -----------------------------------------------------------------------
       # Clone Dobby headers

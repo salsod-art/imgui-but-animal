@@ -54,8 +54,8 @@ jobs:
             git clone --depth 1 https://github.com/jmpews/Dobby dobby-src
           fi
 
-      - name: Download prebuilt Dobby AAR and prepare imported CMake target
-        run: |
+            - name: Download prebuilt Dobby AAR and prepare imported CMake target
+          run: |
           set -euo pipefail
 
           # where to download the prebuilt AAR from Maven Central
@@ -67,19 +67,59 @@ jobs:
           echo "Unzipping AAR..."
           unzip -q dobby-prebuilt/dobby.aar -d dobby-prebuilt || true
 
-          # Try find ARM64 library inside AAR (prefer static .a if present, otherwise .so)
-          if [ -f "dobby-prebuilt/jni/arm64-v8a/libdobby.a" ]; then
-            echo "Found libdobby.a"
-            cp dobby-prebuilt/jni/arm64-v8a/libdobby.a dobby-build/libdobby.a
+          # Try to find an arm64 library inside the extracted AAR.
+          # Preferred: libdobby.a (static), fallback: libdobby.so (shared).
+          FOUND=""
+          FOUND_PATH=""
+          LIB_EXT=""
+
+          # 1) Prefer static archive in any arm64-prefab or jni location
+          FOUND_PATH=$(find dobby-prebuilt -type f -name 'libdobby.a' -path '*arm64*' -print -quit || true)
+          if [ -n "$FOUND_PATH" ]; then
+            FOUND="$FOUND_PATH"
             LIB_EXT="a"
-          elif [ -f "dobby-prebuilt/jni/arm64-v8a/libdobby.so" ]; then
-            echo "Found libdobby.so"
-            cp dobby-prebuilt/jni/arm64-v8a/libdobby.so dobby-build/libdobby.so
-            LIB_EXT="so"
-          else
-            echo "ERROR: No arm64 library found inside AAR (checked jni/arm64-v8a). Listing AAR contents for debug:"
+          fi
+
+          # 2) If no arm64 .a, try arm64 .so
+          if [ -z "$FOUND" ]; then
+            FOUND_PATH=$(find dobby-prebuilt -type f -name 'libdobby.so' -path '*arm64*' -print -quit || true)
+            if [ -n "$FOUND_PATH" ]; then
+              FOUND="$FOUND_PATH"
+              LIB_EXT="so"
+            fi
+          fi
+
+          # 3) If still nothing, try any libdobby.a anywhere
+          if [ -z "$FOUND" ]; then
+            FOUND_PATH=$(find dobby-prebuilt -type f -name 'libdobby.a' -print -quit || true)
+            if [ -n "$FOUND_PATH" ]; then
+              FOUND="$FOUND_PATH"
+              LIB_EXT="a"
+            fi
+          fi
+
+          # 4) Fallback to any libdobby.so anywhere
+          if [ -z "$FOUND" ]; then
+            FOUND_PATH=$(find dobby-prebuilt -type f -name 'libdobby.so' -print -quit || true)
+            if [ -n "$FOUND_PATH" ]; then
+              FOUND="$FOUND_PATH"
+              LIB_EXT="so"
+            fi
+          fi
+
+          if [ -z "$FOUND" ]; then
+            echo "ERROR: No arm64 libdobby found inside AAR (checked common locations). Listing AAR contents for debug:"
             unzip -l dobby-prebuilt/dobby.aar || true
             exit 1
+          fi
+
+          echo "Found Dobby library at: $FOUND (ext=$LIB_EXT)"
+          cp "$FOUND" dobby-build/ || (echo "failed to copy $FOUND" && exit 1)
+
+          # Normalize copied filename to libdobby.<ext>
+          BASENAME="$(basename "$FOUND")"
+          if [ "$BASENAME" != "libdobby.${LIB_EXT}" ]; then
+            mv "dobby-build/$BASENAME" "dobby-build/libdobby.${LIB_EXT}" || true
           fi
 
           # Create a tiny config that defines an IMPORTED target so downstream CMake can link to it.

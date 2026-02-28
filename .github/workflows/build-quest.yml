@@ -51,14 +51,17 @@ jobs:
           cmake --build openxr-build -j$(nproc)
 
       # -----------------------------------------------------------------------
-      # Dobby — clone latest, patch the two NDK r26c build errors, then build
+      # Dobby (cached)
+      # Patches fix two NDK r26c incompatibilities:
+      #   1. OSMemory undeclared in os_arch_features.h
+      #   2. @PAGE/@PAGEOFF Apple asm syntax not supported by clang 17
       # -----------------------------------------------------------------------
       - name: Cache Dobby build
         uses: actions/cache@v4
         id: cache-dobby
         with:
           path: dobby-build
-          key: dobby-arm64-r26c-v5
+          key: dobby-arm64-r26c-v6
 
       - name: Clone Dobby
         run: |
@@ -69,47 +72,53 @@ jobs:
       - name: Patch Dobby for NDK r26c
         if: steps.cache-dobby.outputs.cache-hit != 'true'
         run: |
-          # Fix 1: OSMemory undeclared
-          cat > /tmp/patch_dobby.py << 'PYEOF'
+          python3 << 'PYEOF'
+          import os, re
+
+          # Fix 1: OSMemory undeclared in os_arch_features.h
           path = 'dobby-src/common/os_arch_features.h'
           with open(path, 'r') as f:
-              content = f.read()
-          if '#include <unistd.h>' not in content:
-              content = '#include <unistd.h>\n#include <sys/mman.h>\n' + content
-          content = content.replace('OSMemory::PageSize()', 'sysconf(_SC_PAGESIZE)')
-          content = content.replace(
+              c = f.read()
+          if '#include <unistd.h>' not in c:
+              c = '#include <unistd.h>\n#include <sys/mman.h>\n' + c
+          c = c.replace('OSMemory::PageSize()', 'sysconf(_SC_PAGESIZE)')
+          c = c.replace(
               'OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)',
               'mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0'
           )
           with open(path, 'w') as f:
-              f.write(content)
-          print("Patched " + path)
+              f.write(c)
+          print("Patched", path)
+
+          # Fix 2: @PAGE/@PAGEOFF Apple asm syntax -> Linux GOT syntax
+          # Walk every source file and patch with regex so whitespace doesn't matter
+          for root, dirs, files in os.walk('dobby-src'):
+              for fname in files:
+                  if not fname.endswith(('.cc', '.cpp', '.S', '.asm', '.s')):
+                      continue
+                  fpath = os.path.join(root, fname)
+                  with open(fpath, 'r', errors='replace') as f:
+                      c = f.read()
+                  if '@PAGE' not in c:
+                      continue
+                  orig = c
+                  # adrp rx, symbol@PAGE  ->  adrp rx, :got:symbol
+                  c = re.sub(
+                      r'adrp\s+(x\d+),\s*(\w+)@PAGE\b',
+                      r'adrp \1, :got:\2',
+                      c
+                  )
+                  # add rx, rx, symbol@PAGEOFF  ->  ldr rx, [rx, :got_lo12:symbol]
+                  c = re.sub(
+                      r'add\s+(x\d+),\s*(x\d+),\s*(\w+)@PAGEOFF\b',
+                      r'ldr \1, [\2, :got_lo12:\3]',
+                      c
+                  )
+                  if c != orig:
+                      with open(fpath, 'w') as f:
+                          f.write(c)
+                      print("Patched", fpath)
           PYEOF
-          python3 /tmp/patch_dobby.py
-
-          # Fix 2: @PAGE/@PAGEOFF comes from inline asm in the .cc file
-          # Patch the .cc source directly before it gets compiled
-          CC=dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.cc
-          if [ -f "$CC" ]; then
-            sed -i 's/@PAGE"/:got"/g' "$CC"
-            sed -i 's/@PAGEOFF"/:got_lo12"/g' "$CC"
-            echo "Patched $CC"
-          fi
-
-          # Also patch the .asm file directly just in case
-          ASM=dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
-          if [ -f "$ASM" ]; then
-            sed -i 's/common_closure_bridge_handler@PAGE/:got:common_closure_bridge_handler/g' "$ASM"
-            sed -i 's/common_closure_bridge_handler@PAGEOFF/:got_lo12:common_closure_bridge_handler/g' "$ASM"
-            echo "Patched $ASM"
-          fi
-
-          # Nuclear option: find ANY file containing @PAGE and patch it
-          grep -rl "@PAGE\|@PAGEOFF" dobby-src/ --include="*.cc" --include="*.S" --include="*.asm" --include="*.s" | while read f; do
-            sed -i 's/common_closure_bridge_handler@PAGE/:got:common_closure_bridge_handler/g' "$f"
-            sed -i 's/common_closure_bridge_handler@PAGEOFF/:got_lo12:common_closure_bridge_handler/g' "$f"
-            echo "Patched $f"
-          done
 
       - name: Build Dobby
         if: steps.cache-dobby.outputs.cache-hit != 'true'
@@ -120,7 +129,6 @@ jobs:
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release \
             -DDOBBY_DEBUG=OFF \
-            -DDOBBY_GENERATE_SHARED=OFF \
             -DPlugin.Android.BionicLinkerUtil=OFF
           cmake --build dobby-build --target dobby_static -j$(nproc)
 

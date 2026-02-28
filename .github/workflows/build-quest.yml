@@ -69,8 +69,8 @@ jobs:
       - name: Patch Dobby for NDK r26c
         if: steps.cache-dobby.outputs.cache-hit != 'true'
         run: |
+          # Fix 1: OSMemory undeclared
           cat > /tmp/patch_dobby.py << 'PYEOF'
-          import sys
           path = 'dobby-src/common/os_arch_features.h'
           with open(path, 'r') as f:
               content = f.read()
@@ -87,9 +87,29 @@ jobs:
           PYEOF
           python3 /tmp/patch_dobby.py
 
+          # Fix 2: @PAGE/@PAGEOFF comes from inline asm in the .cc file
+          # Patch the .cc source directly before it gets compiled
+          CC=dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.cc
+          if [ -f "$CC" ]; then
+            sed -i 's/@PAGE"/:got"/g' "$CC"
+            sed -i 's/@PAGEOFF"/:got_lo12"/g' "$CC"
+            echo "Patched $CC"
+          fi
+
+          # Also patch the .asm file directly just in case
           ASM=dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
-          sed -i 's/adrp x17, common_closure_bridge_handler@PAGE/adrp x17, :got:common_closure_bridge_handler/' $ASM
-          sed -i 's/add x17, x17, common_closure_bridge_handler@PAGEOFF/ldr x17, [x17, :got_lo12:common_closure_bridge_handler]/' $ASM
+          if [ -f "$ASM" ]; then
+            sed -i 's/common_closure_bridge_handler@PAGE/:got:common_closure_bridge_handler/g' "$ASM"
+            sed -i 's/common_closure_bridge_handler@PAGEOFF/:got_lo12:common_closure_bridge_handler/g' "$ASM"
+            echo "Patched $ASM"
+          fi
+
+          # Nuclear option: find ANY file containing @PAGE and patch it
+          grep -rl "@PAGE\|@PAGEOFF" dobby-src/ --include="*.cc" --include="*.S" --include="*.asm" --include="*.s" | while read f; do
+            sed -i 's/common_closure_bridge_handler@PAGE/:got:common_closure_bridge_handler/g' "$f"
+            sed -i 's/common_closure_bridge_handler@PAGEOFF/:got_lo12:common_closure_bridge_handler/g' "$f"
+            echo "Patched $f"
+          done
 
       - name: Build Dobby
         if: steps.cache-dobby.outputs.cache-hit != 'true'

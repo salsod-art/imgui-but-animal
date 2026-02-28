@@ -12,15 +12,9 @@ jobs:
     name: Build - Quest (arm64-v8a)
 
     steps:
-      # -----------------------------------------------------------------------
-      # Checkout repository
-      # -----------------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------------------------
-      # Setup Android NDK r26c
-      # -----------------------------------------------------------------------
       - name: Setup Android NDK r26c
         uses: nttld/setup-ndk@v1
         id: ndk
@@ -28,9 +22,6 @@ jobs:
           ndk-version: r26c
           add-to-path: true
 
-      # -----------------------------------------------------------------------
-      # OpenXR SDK (cached)
-      # -----------------------------------------------------------------------
       - name: Cache OpenXR build
         uses: actions/cache@v4
         id: cache-openxr
@@ -56,9 +47,6 @@ jobs:
             -DBUILD_CONFORMANCE_TESTS=OFF
           cmake --build openxr-build -j$(nproc)
 
-      # -----------------------------------------------------------------------
-      # Dobby headers (clone only) + use prebuilt binary (no compile)
-      # -----------------------------------------------------------------------
       - name: Clone Dobby (headers only)
         run: |
           # clone so we get headers/source layout for includes. we won't build it.
@@ -97,27 +85,24 @@ jobs:
           # Create a tiny config that defines an IMPORTED target so downstream CMake can link to it.
           cat > dobby-build/dobby-config.cmake <<'EOF'
 
-       if(NOT TARGET dobby_static)
-       if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
-       add_library(dobby_static STATIC IMPORTED)
-       set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
-       elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
-       add_library(dobby_static SHARED IMPORTED)
-       set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
-       else()
-       message(FATAL_ERROR "dobby prebuilt library not found in ${CMAKE_CURRENT_LIST_DIR}/..")
-       endif()
-       endif()
+          if(NOT TARGET dobby_static)
+          if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
+          add_library(dobby_static STATIC IMPORTED)
+          set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
+          elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
+          add_library(dobby_static SHARED IMPORTED)
+          set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
+          else()
+          message(FATAL_ERROR "dobby prebuilt library not found in ${CMAKE_CURRENT_LIST_DIR}/..")
+          endif()
+          endif()
 
-       set(DOBBY_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../dobby-src" CACHE PATH "Dobby headers")
-       EOF
+          set(DOBBY_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../dobby-src" CACHE PATH "Dobby headers")
+          EOF
 
           echo "Prepared dobby-build with prebuilt library and dobby-config.cmake"
           ls -l dobby-build || true
 
-      # -----------------------------------------------------------------------
-      # Configure imgui-vr and tell it where to find Dobby (prebuilt)
-      # -----------------------------------------------------------------------
       - name: Configure libimgui (use prebuilt dobby)
         env:
           DOBBY_CONFIG_DIR: ${{ github.workspace }}/dobby-build
@@ -141,9 +126,6 @@ jobs:
       - name: Build libimgui.so
         run: cmake --build build-quest -j$(nproc)
 
-      # -----------------------------------------------------------------------
-      # Upload artifact
-      # -----------------------------------------------------------------------
       - name: Upload libimgui.so
         uses: actions/upload-artifact@v4
         with:

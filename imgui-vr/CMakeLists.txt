@@ -14,13 +14,9 @@ option(IMGUI_VR_DOBBY    "Use Dobby (Android/Linux)"  ON)
 
 # ============================================================================
 #  Paths
-#  IMGUI_DIR   = root of the imgui fork (one level up from imgui-vr/)
-#  OPENXR_DIR  = OpenXR-SDK source root  (headers live in include/)
-#  OPENXR_BUILD_DIR = where the OpenXR SDK was built (loader .a lives here)
-#  DOBBY_DIR   = Dobby source root       (headers in include/, lib in build/)
-#  DOBBY_BUILD_DIR  = where Dobby was built (libdobby.a lives here)
 # ============================================================================
-set(IMGUI_DIR        "${CMAKE_SOURCE_DIR}/.."  CACHE PATH "Path to imgui root")
+# IMGUI_DIR = repo root (where backends/ and imgui.cpp live)
+set(IMGUI_DIR        "${CMAKE_SOURCE_DIR}"  CACHE PATH "Path to imgui root")
 set(OPENXR_DIR       ""                        CACHE PATH "Path to OpenXR-SDK source")
 set(OPENXR_BUILD_DIR ""                        CACHE PATH "Path to OpenXR-SDK build output")
 set(DOBBY_DIR        ""                        CACHE PATH "Path to Dobby source")
@@ -46,9 +42,7 @@ set(BACKEND_SOURCES
     ${IMGUI_DIR}/backends/imgui_impl_openxr.cpp
 )
 
-# ============================================================================
-#  Renderer backend
-# ============================================================================
+# Renderer backends
 if(IMGUI_VR_VULKAN)
     list(APPEND BACKEND_SOURCES ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
     add_compile_definitions(IMGUI_IMPL_OPENXR_VULKAN)
@@ -58,9 +52,7 @@ if(IMGUI_VR_OPENGL)
     add_compile_definitions(IMGUI_IMPL_OPENXR_OPENGL)
 endif()
 
-# ============================================================================
-#  Hook framework
-# ============================================================================
+# Hook framework
 if(IMGUI_VR_MINHOOK)
     add_compile_definitions(IMGUI_IMPL_OPENXR_USE_MINHOOK)
 endif()
@@ -69,23 +61,24 @@ if(IMGUI_VR_DOBBY)
 endif()
 
 # ============================================================================
-#  Target — output is libimgui.so
+#  Target — output libimgui.so
 # ============================================================================
 add_library(imgui SHARED
     ${IMGUI_SOURCES}
     ${BACKEND_SOURCES}
-    ${CMAKE_SOURCE_DIR}/examples/imgui_vr_example.cpp
+    ${IMGUI_DIR}/examples/imgui_vr_example.cpp
 )
 
+# Include directories
 target_include_directories(imgui PRIVATE
+    ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${OPENXR_DIR}/include
 )
 
-# Vulkan — on Android the driver is loaded at runtime, no link lib needed
+# Vulkan
 if(IMGUI_VR_VULKAN)
     if(ANDROID)
-        # Headers only; Vulkan is always available on Quest via the loader
         find_path(VULKAN_INCLUDE vulkan/vulkan.h
             PATHS ${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include)
         target_include_directories(imgui PRIVATE ${VULKAN_INCLUDE})
@@ -97,7 +90,6 @@ endif()
 
 # OpenXR loader
 if(ANDROID)
-    # Link against the static loader we built from source
     target_link_libraries(imgui PRIVATE
         ${OPENXR_BUILD_DIR}/src/loader/libopenxr_loader.a
         android log)

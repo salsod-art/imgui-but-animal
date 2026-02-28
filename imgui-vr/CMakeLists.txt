@@ -43,7 +43,7 @@ set(IMGUI_SOURCES
 #  Our backend
 # ============================================================================
 set(BACKEND_SOURCES
-    ${CMAKE_SOURCE_DIR}/backends/imgui_impl_openxr.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_openxr.cpp
 )
 
 # ============================================================================
@@ -78,9 +78,7 @@ add_library(imgui SHARED
 )
 
 target_include_directories(imgui PRIVATE
-    ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${CMAKE_SOURCE_DIR}/backends
     ${OPENXR_DIR}/include
 )
 

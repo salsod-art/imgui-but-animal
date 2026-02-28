@@ -72,25 +72,41 @@ jobs:
             git clone --depth 1 https://github.com/jmpews/Dobby dobby-src
           fi
 
-      - name: Patch Dobby for Android NDK r26c
+      - name: Patch Dobby for Android
         if: steps.cache-dobby.outputs.cache-hit != 'true'
         run: |
-          # --- Fix 1: OSMemory undeclared in os_arch_features.h ---
+          set -euo pipefail
+
+          # Patch OSMemory for NDK r26c
           OSM="dobby-src/common/os_arch_features.h"
-          sed -i '1s|^|#include <unistd.h>\n#include <sys/mman.h>\n|' "$OSM"
-          sed -i 's|OSMemory::PageSize()|sysconf(_SC_PAGESIZE)|g' "$OSM"
-          sed -i 's@OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)@mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0@g' "$OSM"
+          if [ -f "$OSM" ]; then
+            sed -i '1s|^|#include <unistd.h>\n#include <sys/mman.h>\n|' "$OSM" || true
+            sed -i 's|OSMemory::PageSize()|sysconf(_SC_PAGESIZE)|g' "$OSM" || true
+            sed -i 's@OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)@mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0@g' "$OSM" || true
+          fi
 
-          # --- Fix 2: Remove Apple-only assembly for Android ---
-          ASM_LIST="closure_bridge_arm64.asm closure_trampoline_arm64.asm"
-          for ASM in $ASM_LIST; do
-            FILE="dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/$ASM"
-            if [ -f "$FILE" ]; then
-              mv "$FILE" "$FILE.disabled-for-android"
-            fi
-          done
+          # Guard Apple-only ASM in CMakeLists.txt
+          CML="dobby-src/CMakeLists.txt"
+          if [ -f "$CML" ]; then
+            awk '
+              BEGIN { seen=0 }
+              /closure_bridge_arm64.asm/ && seen==0 {
+                print "if(NOT ANDROID)"
+                print $0
+                seen=1
+                next
+              }
+              /closure_trampoline_arm64.asm/ && seen==1 {
+                print $0
+                print "endif()"
+                seen=2
+                next
+              }
+              { print $0 }
+            ' "$CML" > "$CML.tmp" && mv "$CML.tmp" "$CML"
+          fi
 
-      - name: Build Dobby
+      - name: Build Dobby (Android)
         if: steps.cache-dobby.outputs.cache-hit != 'true'
         run: |
           cmake -S dobby-src -B dobby-build \
@@ -105,7 +121,7 @@ jobs:
       # -----------------------------------------------------------------------
       # Build libimgui.so
       # -----------------------------------------------------------------------
-      - name: Configure
+      - name: Configure libimgui
         run: |
           cmake -S imgui-vr -B build-quest \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
@@ -121,7 +137,7 @@ jobs:
             -DIMGUI_VR_MINHOOK=OFF \
             -DIMGUI_VR_DOBBY=ON
 
-      - name: Build
+      - name: Build libimgui.so
         run: cmake --build build-quest -j$(nproc)
 
       # -----------------------------------------------------------------------

@@ -72,28 +72,33 @@ jobs:
             git clone --depth 1 https://github.com/jmpews/Dobby dobby-src
           fi
 
-      - name: Patch Dobby for NDK r26c
+      - name: Patch Dobby for Android (remove macOS ASM + guard asm flag)
         if: steps.cache-dobby.outputs.cache-hit != 'true'
         run: |
-          # --- Fix 1: OSMemory undeclared in os_arch_features.h ---
-          OSM="dobby-src/common/os_arch_features.h"
-          sed -i '1s|^|#include <unistd.h>\n#include <sys/mman.h>\n|' "$OSM"
-          sed -i 's|OSMemory::PageSize()|sysconf(_SC_PAGESIZE)|g' "$OSM"
-          sed -i 's@OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)@mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0@g' "$OSM"
-          echo "Patched $OSM"
+          set -euo pipefail
 
-          # --- Fix 2: @PAGE/@PAGEOFF Apple asm syntax in closure_bridge_arm64.asm ---
-          ASM="dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm"
-          echo "=== Lines containing PAGE before patch ==="
-          grep -n "PAGE\|adrp\|common_closure" "$ASM" || echo "(nothing found)"
-          # Try tab separator first
-          sed -i 's|\tadrp\t x17, common_closure_bridge_handler@PAGE|adrp x17, :got:common_closure_bridge_handler|g' "$ASM"
-          sed -i 's|\tadd\t x17, x17, common_closure_bridge_handler@PAGEOFF|ldr x17, [x17, :got_lo12:common_closure_bridge_handler]|g' "$ASM"
-          # Fallback: space separator
-          sed -i 's|adrp x17, common_closure_bridge_handler@PAGE|adrp x17, :got:common_closure_bridge_handler|g' "$ASM"
-          sed -i 's|add x17, x17, common_closure_bridge_handler@PAGEOFF|ldr x17, [x17, :got_lo12:common_closure_bridge_handler]|g' "$ASM"
-          echo "=== Lines containing PAGE after patch ==="
-          grep -n "PAGE\|adrp\|common_closure" "$ASM" || echo "(nothing found - patch successful)"
+          # Fix: add missing includes and replace OSMemory usage
+          OSM="dobby-src/common/os_arch_features.h"
+          if [ -f "$OSM" ]; then
+            sed -i '1s|^|#include <unistd.h>\n#include <sys/mman.h>\n|' "$OSM" || true
+            sed -i 's|OSMemory::PageSize()|sysconf(_SC_PAGESIZE)|g' "$OSM" || true
+            sed -i 's@OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)@mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0@g' "$OSM" || true
+            echo "Patched $OSM"
+          else
+            echo "Warning: $OSM not found; skipping OSM patch"
+          fi
+
+          # Remove macOS-only arm64 ASM files so Android assembler won't try to compile them
+          rm -f dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm
+          rm -f dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_trampoline_arm64.asm
+
+          # Guard BUILD_WITH_TRAMPOLINE_ASM so it's NOT enabled for Android builds
+          # Wrap the compile_definitions addition with an if(NOT ANDROID) ... endif()
+          if grep -q "BUILD_WITH_TRAMPOLINE_ASM" dobby-src/CMakeLists.txt; then
+            sed -i 's@set(compile_definitions "${compile_definitions} -DBUILD_WITH_TRAMPOLINE_ASM")@if(NOT ANDROID)\nset(compile_definitions "${compile_definitions} -DBUILD_WITH_TRAMPOLINE_ASM")\nendif()@' dobby-src/CMakeLists.txt || true
+          else
+            echo "No BUILD_WITH_TRAMPOLINE_ASM line found in CMakeLists.txt; skipping guard"
+          fi
 
       - name: Build Dobby
         if: steps.cache-dobby.outputs.cache-hit != 'true'
@@ -104,7 +109,10 @@ jobs:
             -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release \
             -DDOBBY_DEBUG=OFF \
-            -DPlugin.Android.BionicLinkerUtil=OFF
+            -DPlugin.Android.BionicLinkerUtil=OFF \
+            -DDOBBY_BUILD_EXAMPLE=OFF \
+            -DDOBBY_BUILD_TEST=OFF \
+            -DDOBBY_BUILD_KERNEL_MODE=OFF
           cmake --build dobby-build --target dobby_static -j$(nproc)
 
       # -----------------------------------------------------------------------
@@ -141,7 +149,7 @@ jobs:
 
       - name: Show build info
         run: |
-          ls -lh build-quest/libimgui.so
-          file build-quest/libimgui.so
+          ls -lh build-quest/libimgui.so || true
+          file build-quest/libimgui.so || true
           nm -D build-quest/libimgui.so 2>/dev/null \
-            | grep -E "lib_init|xrEndFrame|ImGui_ImplOpenXR" | head -20
+            | grep -E "lib_init|xrEndFrame|ImGui_ImplOpenXR" | head -20 || true

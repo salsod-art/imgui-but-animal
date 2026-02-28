@@ -1,177 +1,129 @@
-name: Build libimgui.so (Quest / arm64)
+cmake_minimum_required(VERSION 3.20)
+project(imgui VERSION 1.0 LANGUAGES CXX)
 
-on:
-  push:
-    branches: [ master, main ]
-  pull_request: {}
-  workflow_dispatch: {}
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-jobs:
-  build-quest:
-    runs-on: ubuntu-latest
-    name: Build - Quest (arm64-v8a)
+# ============================================================================
+#  Options
+# ============================================================================
+option(IMGUI_VR_VULKAN   "Build Vulkan render path"  ON)
+option(IMGUI_VR_OPENGL   "Build OpenGL render path"  OFF)
+option(IMGUI_VR_MINHOOK  "Use MinHook (Windows)"     OFF)
+option(IMGUI_VR_DOBBY    "Use Dobby (Android/Linux)"  ON)
 
-    steps:
-      # -----------------------------------------------------------------------
-      # Checkout main repo
-      # -----------------------------------------------------------------------
-      - name: Checkout
-        uses: actions/checkout@v4
+# ============================================================================
+#  Paths
+# ============================================================================
+# IMGUI_DIR = repo root (where backends/ and imgui.cpp live)
+set(IMGUI_DIR        "${CMAKE_SOURCE_DIR}"  CACHE PATH "Path to imgui root")
+set(OPENXR_DIR       ""                        CACHE PATH "Path to OpenXR-SDK source")
+set(OPENXR_BUILD_DIR ""                        CACHE PATH "Path to OpenXR-SDK build output")
+set(DOBBY_DIR        ""                        CACHE PATH "Path to Dobby source")
+set(DOBBY_BUILD_DIR  ""                        CACHE PATH "Path to Dobby build output")
+set(VULKAN_DIR       "$ENV{VULKAN_SDK}"        CACHE PATH "Path to Vulkan SDK (desktop only)")
+set(MINHOOK_DIR      ""                        CACHE PATH "Path to MinHook root (Windows only)")
 
-      # -----------------------------------------------------------------------
-      # Setup Android NDK r26c
-      # -----------------------------------------------------------------------
-      - name: Setup Android NDK r26c
-        uses: nttld/setup-ndk@v1
-        id: ndk
-        with:
-          ndk-version: r26c
-          add-to-path: true
+# ============================================================================
+#  ImGui core sources
+# ============================================================================
+set(IMGUI_SOURCES
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp       # remove in production
+)
 
-      # -----------------------------------------------------------------------
-      # Cache OpenXR build
-      # -----------------------------------------------------------------------
-      - name: Cache OpenXR build
-        uses: actions/cache@v4
-        id: cache-openxr
-        with:
-          path: openxr-build
-          key: openxr-arm64-r26c-v2
+# ============================================================================
+#  Our backend
+# ============================================================================
+set(BACKEND_SOURCES
+    ${IMGUI_DIR}/backends/imgui_impl_openxr.cpp
+)
 
-      - name: Clone OpenXR SDK
-        run: |
-          if [ ! -d openxr-src ]; then
-            git clone --depth 1 https://github.com/KhronosGroup/OpenXR-SDK openxr-src
-          fi
+# Renderer backends
+if(IMGUI_VR_VULKAN)
+    list(APPEND BACKEND_SOURCES ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
+    add_compile_definitions(IMGUI_IMPL_OPENXR_VULKAN)
+endif()
+if(IMGUI_VR_OPENGL)
+    list(APPEND BACKEND_SOURCES ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+    add_compile_definitions(IMGUI_IMPL_OPENXR_OPENGL)
+endif()
 
-      - name: Build OpenXR SDK
-        if: steps.cache-openxr.outputs.cache-hit != 'true'
-        run: |
-          cmake -S openxr-src -B openxr-build \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-26 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTS=OFF \
-            -DBUILD_CONFORMANCE_TESTS=OFF
-          cmake --build openxr-build -j$(nproc)
+# Hook framework
+if(IMGUI_VR_MINHOOK)
+    add_compile_definitions(IMGUI_IMPL_OPENXR_USE_MINHOOK)
+endif()
+if(IMGUI_VR_DOBBY)
+    add_compile_definitions(IMGUI_IMPL_OPENXR_USE_DOBBY)
+endif()
 
-      # -----------------------------------------------------------------------
-      # Clone imgui-vr explicitly to ensure backends exist
-      # -----------------------------------------------------------------------
-      - name: Clone imgui-vr
-        run: |
-          set -euo pipefail
-          if [ ! -d imgui-vr ]; then
-            git clone --depth 1 https://github.com/<YOUR-IMGUI-VR-REPO>.git imgui-vr
-          fi
+# ============================================================================
+#  Target — output libimgui.so
+# ============================================================================
+add_library(imgui SHARED
+    ${IMGUI_SOURCES}
+    ${BACKEND_SOURCES}
+    ${IMGUI_DIR}/examples/imgui_vr_example.cpp
+)
 
-      # Verify OpenXR backend exists
-      - name: Verify OpenXR backend
-        run: |
-          if [ ! -f imgui-vr/backends/imgui_impl_openxr.cpp ]; then
-            echo "ERROR: imgui_impl_openxr.cpp not found in imgui-vr/backends!"
-            exit 1
-          fi
-          if [ ! -f imgui-vr/backends/imgui_impl_openxr.h ]; then
-            echo "ERROR: imgui_impl_openxr.h not found in imgui-vr/backends!"
-            exit 1
-          fi
-          ls -l imgui-vr/backends
+# Include directories
+target_include_directories(imgui PRIVATE
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+    ${OPENXR_DIR}/include
+)
 
-      # -----------------------------------------------------------------------
-      # Clone Dobby headers
-      # -----------------------------------------------------------------------
-      - name: Clone Dobby (headers only)
-        run: |
-          set -euo pipefail
-          if [ ! -d dobby-src ]; then
-            git clone --depth 1 https://github.com/jmpews/Dobby dobby-src
-          fi
+# Vulkan
+if(IMGUI_VR_VULKAN)
+    if(ANDROID)
+        find_path(VULKAN_INCLUDE vulkan/vulkan.h
+            PATHS ${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include)
+        target_include_directories(imgui PRIVATE ${VULKAN_INCLUDE})
+    else()
+        target_include_directories(imgui PRIVATE ${VULKAN_DIR}/Include)
+        target_link_libraries(imgui PRIVATE ${VULKAN_DIR}/Lib/vulkan-1.lib)
+    endif()
+endif()
 
-      # -----------------------------------------------------------------------
-      # Download prebuilt Dobby AAR and prepare CMake import
-      # -----------------------------------------------------------------------
-      - name: Download prebuilt Dobby AAR
-        run: |
-          set -euo pipefail
-          AAR_URL="https://repo1.maven.org/maven2/io/github/vvb2060/ndk/dobby/1.2/dobby-1.2.aar"
-          mkdir -p dobby-prebuilt dobby-build
-          curl -L -o dobby-prebuilt/dobby.aar "$AAR_URL"
-          unzip -q dobby-prebuilt/dobby.aar -d dobby-prebuilt || true
+# OpenXR loader
+if(ANDROID)
+    target_link_libraries(imgui PRIVATE
+        ${OPENXR_BUILD_DIR}/src/loader/libopenxr_loader.a
+        android log)
+else()
+    target_link_libraries(imgui PRIVATE
+        ${OPENXR_DIR}/x64/lib/openxr_loader.lib)
+endif()
 
-          # Find arm64 libdobby.a or fallback .so
-          FOUND=$(find dobby-prebuilt -type f -name 'libdobby.a' -path '*arm64*' -print -quit || true)
-          LIB_EXT="a"
-          if [ -z "$FOUND" ]; then
-            FOUND=$(find dobby-prebuilt -type f -name 'libdobby.so' -path '*arm64*' -print -quit || true)
-            LIB_EXT="so"
-          fi
-          if [ -z "$FOUND" ]; then
-            echo "ERROR: No arm64 libdobby found in AAR"
-            unzip -l dobby-prebuilt/dobby.aar
-            exit 1
-          fi
+# Dobby (Android only)
+if(IMGUI_VR_DOBBY)
+    target_include_directories(imgui PRIVATE ${DOBBY_DIR}/include)
+    target_link_libraries(imgui PRIVATE
+        ${DOBBY_BUILD_DIR}/libdobby.a
+        dl)
+endif()
 
-          cp "$FOUND" dobby-build/libdobby.$LIB_EXT
+# MinHook (Windows only)
+if(IMGUI_VR_MINHOOK AND WIN32)
+    target_include_directories(imgui PRIVATE ${MINHOOK_DIR}/include)
+    target_link_libraries(imgui PRIVATE ${MINHOOK_DIR}/lib/libMinHook.lib)
+    target_compile_definitions(imgui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX VK_USE_PLATFORM_WIN32_KHR)
+    target_link_libraries(imgui PRIVATE d3d11)
+endif()
 
-          # Minimal CMake import
-          cat > dobby-build/dobby-config.cmake <<'EOF'
-          if(NOT TARGET dobby_static)
-          if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
-          add_library(dobby_static STATIC IMPORTED)
-          set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
-          elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
-          add_library(dobby_static SHARED IMPORTED)
-          set_target_properties(dobby_static PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../libdobby.so")
-          else()
-          message(FATAL_ERROR "dobby prebuilt library not found")
-          endif()
-          endif()
-          set(DOBBY_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../dobby-src" CACHE PATH "Dobby headers")
-          EOF
+# Strip in release
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set_target_properties(imgui PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
 
-      # -----------------------------------------------------------------------
-      # Configure libimgui
-      # -----------------------------------------------------------------------
-      - name: Configure libimgui
-        env:
-          DOBBY_CONFIG_DIR: ${{ github.workspace }}/dobby-build
-        run: |
-          cmake -S imgui-vr -B build-quest \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-26 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DIMGUI_DIR=${{ github.workspace }} \
-            -DOPENXR_DIR=${{ github.workspace }}/openxr-src \
-            -DOPENXR_BUILD_DIR=${{ github.workspace }}/openxr-build \
-            -DDOBBY_DIR=${{ github.workspace }}/dobby-src \
-            -DDOBBY_BUILD_DIR=${{ github.workspace }}/dobby-build \
-            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dobby-build \
-            -DCMAKE_MODULE_PATH=${{ github.workspace }}/dobby-build \
-            -DIMGUI_VR_VULKAN=ON \
-            -DIMGUI_VR_MINHOOK=OFF \
-            -DIMGUI_VR_DOBBY=ON
-
-      # -----------------------------------------------------------------------
-      # Build libimgui.so
-      # -----------------------------------------------------------------------
-      - name: Build libimgui.so
-        run: cmake --build build-quest -j$(nproc)
-
-      # -----------------------------------------------------------------------
-      # Upload artifact
-      # -----------------------------------------------------------------------
-      - name: Upload libimgui.so
-        uses: actions/upload-artifact@v4
-        with:
-          name: libimgui-quest-arm64
-          path: build-quest/libimgui.so
-          if-no-files-found: error
-
-      - name: Show build info
-        run: |
-          ls -lh build-quest/libimgui.so || true
-          file build-quest/libimgui.so || true
-          nm -D build-quest/libimgui.so 2>/dev/null | grep -E "lib_init|xrEndFrame|ImGui_ImplOpenXR" | head -20 || true
+message(STATUS "libimgui.so config:")
+message(STATUS "  Renderer : Vulkan=${IMGUI_VR_VULKAN}  OpenGL=${IMGUI_VR_OPENGL}")
+message(STATUS "  Hooks    : MinHook=${IMGUI_VR_MINHOOK}  Dobby=${IMGUI_VR_DOBBY}")
+message(STATUS "  IMGUI_DIR      = ${IMGUI_DIR}")
+message(STATUS "  OPENXR_DIR     = ${OPENXR_DIR}")
+message(STATUS "  OPENXR_BUILD   = ${OPENXR_BUILD_DIR}")
+message(STATUS "  DOBBY_DIR      = ${DOBBY_DIR}")
+message(STATUS "  DOBBY_BUILD    = ${DOBBY_BUILD_DIR}")

@@ -49,16 +49,17 @@ jobs:
 
       - name: Clone Dobby (headers only)
         run: |
-          # clone so we get headers/source layout for includes. we won't build it.
+          set -euo pipefail
           if [ ! -d dobby-src ]; then
             git clone --depth 1 https://github.com/jmpews/Dobby dobby-src
+          else
+            echo "dobby-src already exists, skipping clone"
           fi
 
-            - name: Download prebuilt Dobby AAR and prepare imported CMake target
-          run: |
+      - name: Download prebuilt Dobby AAR and prepare imported CMake target
+        run: |
           set -euo pipefail
 
-          # where to download the prebuilt AAR from Maven Central
           AAR_URL="https://repo1.maven.org/maven2/io/github/vvb2060/ndk/dobby/1.2/dobby-1.2.aar"
           mkdir -p dobby-prebuilt dobby-build
           echo "Downloading prebuilt dobby AAR from Maven Central..."
@@ -67,64 +68,25 @@ jobs:
           echo "Unzipping AAR..."
           unzip -q dobby-prebuilt/dobby.aar -d dobby-prebuilt || true
 
-          # Try to find an arm64 library inside the extracted AAR.
-          # Preferred: libdobby.a (static), fallback: libdobby.so (shared).
-          FOUND=""
-          FOUND_PATH=""
-          LIB_EXT=""
-
-          # 1) Prefer static archive in any arm64-prefab or jni location
-          FOUND_PATH=$(find dobby-prebuilt -type f -name 'libdobby.a' -path '*arm64*' -print -quit || true)
-          if [ -n "$FOUND_PATH" ]; then
-            FOUND="$FOUND_PATH"
-            LIB_EXT="a"
-          fi
-
-          # 2) If no arm64 .a, try arm64 .so
+          # Find arm64 libdobby
+          FOUND=$(find dobby-prebuilt -type f -name 'libdobby.a' -path '*arm64*' -print -quit || true)
+          LIB_EXT="a"
           if [ -z "$FOUND" ]; then
-            FOUND_PATH=$(find dobby-prebuilt -type f -name 'libdobby.so' -path '*arm64*' -print -quit || true)
-            if [ -n "$FOUND_PATH" ]; then
-              FOUND="$FOUND_PATH"
-              LIB_EXT="so"
-            fi
-          fi
-
-          # 3) If still nothing, try any libdobby.a anywhere
-          if [ -z "$FOUND" ]; then
-            FOUND_PATH=$(find dobby-prebuilt -type f -name 'libdobby.a' -print -quit || true)
-            if [ -n "$FOUND_PATH" ]; then
-              FOUND="$FOUND_PATH"
-              LIB_EXT="a"
-            fi
-          fi
-
-          # 4) Fallback to any libdobby.so anywhere
-          if [ -z "$FOUND" ]; then
-            FOUND_PATH=$(find dobby-prebuilt -type f -name 'libdobby.so' -print -quit || true)
-            if [ -n "$FOUND_PATH" ]; then
-              FOUND="$FOUND_PATH"
-              LIB_EXT="so"
-            fi
+            FOUND=$(find dobby-prebuilt -type f -name 'libdobby.so' -path '*arm64*' -print -quit || true)
+            LIB_EXT="so"
           fi
 
           if [ -z "$FOUND" ]; then
-            echo "ERROR: No arm64 libdobby found inside AAR (checked common locations). Listing AAR contents for debug:"
+            echo "ERROR: No arm64 libdobby found inside AAR"
             unzip -l dobby-prebuilt/dobby.aar || true
             exit 1
           fi
 
-          echo "Found Dobby library at: $FOUND (ext=$LIB_EXT)"
-          cp "$FOUND" dobby-build/ || (echo "failed to copy $FOUND" && exit 1)
+          echo "Found Dobby library at: $FOUND"
+          cp "$FOUND" dobby-build/libdobby.$LIB_EXT
 
-          # Normalize copied filename to libdobby.<ext>
-          BASENAME="$(basename "$FOUND")"
-          if [ "$BASENAME" != "libdobby.${LIB_EXT}" ]; then
-            mv "dobby-build/$BASENAME" "dobby-build/libdobby.${LIB_EXT}" || true
-          fi
-
-          # Create a tiny config that defines an IMPORTED target so downstream CMake can link to it.
+          # Minimal CMake import
           cat > dobby-build/dobby-config.cmake <<'EOF'
-
           if(NOT TARGET dobby_static)
           if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../libdobby.a")
           add_library(dobby_static STATIC IMPORTED)
@@ -136,11 +98,9 @@ jobs:
           message(FATAL_ERROR "dobby prebuilt library not found in ${CMAKE_CURRENT_LIST_DIR}/..")
           endif()
           endif()
-
           set(DOBBY_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../dobby-src" CACHE PATH "Dobby headers")
           EOF
 
-          echo "Prepared dobby-build with prebuilt library and dobby-config.cmake"
           ls -l dobby-build || true
 
       - name: Configure libimgui (use prebuilt dobby)
@@ -163,19 +123,19 @@ jobs:
             -DIMGUI_VR_MINHOOK=OFF \
             -DIMGUI_VR_DOBBY=ON
 
-      - name: Build libimgui.so
-        run: cmake --build build-quest -j$(nproc)
+            - name: Build libimgui.so
+            run: cmake --build build-quest -j$(nproc)
 
-      - name: Upload libimgui.so
-        uses: actions/upload-artifact@v4
-        with:
-          name: libimgui-quest-arm64
-          path: build-quest/libimgui.so
-          if-no-files-found: error
+          - name: Upload libimgui.so
+            uses: actions/upload-artifact@v4
+            with:
+              name: libimgui-quest-arm64
+              path: build-quest/libimgui.so
+              if-no-files-found: error
 
-      - name: Show build info
-        run: |
-          ls -lh build-quest/libimgui.so || true
-          file build-quest/libimgui.so || true
-          nm -D build-quest/libimgui.so 2>/dev/null \
-            | grep -E "lib_init|xrEndFrame|ImGui_ImplOpenXR" | head -20 || true
+          - name: Show build info
+            run: |
+              ls -lh build-quest/libimgui.so || true
+              file build-quest/libimgui.so || true
+              nm -D build-quest/libimgui.so 2>/dev/null \
+                | grep -E "lib_init|xrEndFrame|ImGui_ImplOpenXR" | head -20 || true

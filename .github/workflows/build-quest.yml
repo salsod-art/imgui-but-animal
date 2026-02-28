@@ -12,9 +12,15 @@ jobs:
     name: Build - Quest (arm64-v8a)
 
     steps:
+      # -----------------------------------------------------------------------
+      # Checkout repository
+      # -----------------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+      # -----------------------------------------------------------------------
+      # Setup Android NDK r26c
+      # -----------------------------------------------------------------------
       - name: Setup Android NDK r26c
         uses: nttld/setup-ndk@v1
         id: ndk
@@ -73,22 +79,19 @@ jobs:
           OSM="dobby-src/common/os_arch_features.h"
           sed -i '1s|^|#include <unistd.h>\n#include <sys/mman.h>\n|' "$OSM"
           sed -i 's|OSMemory::PageSize()|sysconf(_SC_PAGESIZE)|g' "$OSM"
-          sed -i 's|OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)|mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0|g' "$OSM"
+          sed -i 's@OSMemory::SetPermission(page, OSMemory::PageSize(), kReadExecute)@mprotect(page, sysconf(_SC_PAGESIZE), PROT_READ | PROT_EXEC) == 0@g' "$OSM"
           echo "Patched $OSM"
 
           # --- Fix 2: @PAGE/@PAGEOFF Apple asm syntax in closure_bridge_arm64.asm ---
           ASM="dobby-src/source/TrampolineBridge/ClosureTrampolineBridge/arm64/closure_bridge_arm64.asm"
-
           echo "=== Lines containing PAGE before patch ==="
           grep -n "PAGE\|adrp\|common_closure" "$ASM" || echo "(nothing found)"
-
-          # Try tab separator
-          sed -i 's|adrp\tx17, common_closure_bridge_handler@PAGE|adrp x17, :got:common_closure_bridge_handler|g' "$ASM"
-          sed -i 's|add\tx17, x17, common_closure_bridge_handler@PAGEOFF|ldr x17, [x17, :got_lo12:common_closure_bridge_handler]|g' "$ASM"
-          # Try space separator
+          # Try tab separator first
+          sed -i 's|\tadrp\t x17, common_closure_bridge_handler@PAGE|adrp x17, :got:common_closure_bridge_handler|g' "$ASM"
+          sed -i 's|\tadd\t x17, x17, common_closure_bridge_handler@PAGEOFF|ldr x17, [x17, :got_lo12:common_closure_bridge_handler]|g' "$ASM"
+          # Fallback: space separator
           sed -i 's|adrp x17, common_closure_bridge_handler@PAGE|adrp x17, :got:common_closure_bridge_handler|g' "$ASM"
           sed -i 's|add x17, x17, common_closure_bridge_handler@PAGEOFF|ldr x17, [x17, :got_lo12:common_closure_bridge_handler]|g' "$ASM"
-
           echo "=== Lines containing PAGE after patch ==="
           grep -n "PAGE\|adrp\|common_closure" "$ASM" || echo "(nothing found - patch successful)"
 
